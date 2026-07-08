@@ -1,6 +1,12 @@
 const HELIUS_API = "https://mainnet.helius-rpc.com/?api-key=a918e88a-94f6-4eeb-803b-e8d4365c57e9";
 const TELEGRAM_BOT_TOKEN = "8871164860:AAGtHHO6VXUA4fuk1h111qFH5aIDDUYohc0";
 const TELEGRAM_CHAT_ID = "8655397679";
+const GMGN_API_KEY = process.env.GMGN_API_KEY || null;
+
+if (!GMGN_API_KEY) {
+  console.warn("⚠️  GMGN_API_KEY not set — running with basic Helius metrics only.");
+  console.warn("   Set GMGN_API_KEY to https://gmgn.ai/ai for deep metrics (volume, liquidity, rug probability, holder distribution, authorities).");
+}
 
 const FILTERS = {
   top10_min: 15,
@@ -37,6 +43,80 @@ async function rpcCall(method, params) {
   return data.result;
 }
 
+async function getGMGNMetrics(ca) {
+  if (!GMGN_API_KEY) {
+    return null;
+  }
+
+  try {
+    // Token security / authority info
+    const securityRes = await fetch(
+      `https://gmgn.ai/api/v1/token_security/sol/${ca}`,
+      { headers: { "Authorization": `Bearer ${GMGN_API_KEY}`, "Content-Type": "application/json" } }
+    );
+    const securityData = await securityRes.json();
+    const security = securityData?.data || {};
+
+    // Token market / price info (volume, liquidity, bonding curve, market cap)
+    const infoRes = await fetch(
+      `https://gmgn.ai/api/v1/token_info/sol/${ca}`,
+      { headers: { "Authorization": `Bearer ${GMGN_API_KEY}`, "Content-Type": "application/json" } }
+    );
+    const infoData = await infoRes.json();
+    const info = infoData?.data || {};
+
+    // Rug check / risk score
+    const rugRes = await fetch(
+      `https://gmgn.ai/api/v1/token_rug_check/sol/${ca}`,
+      { headers: { "Authorization": `Bearer ${GMGN_API_KEY}`, "Content-Type": "application/json" } }
+    );
+    const rugData = await rugRes.json();
+    const rug = rugData?.data || {};
+
+    // Holder distribution
+    const holderRes = await fetch(
+      `https://gmgn.ai/api/v1/token_holder_stat/sol/${ca}`,
+      { headers: { "Authorization": `Bearer ${GMGN_API_KEY}`, "Content-Type": "application/json" } }
+    );
+    const holderData = await holderRes.json();
+    const holders = holderData?.data || {};
+
+    const metrics = {
+      // Volume & liquidity
+      volume_24h:        info.volume_24h        ?? null,
+      liquidity:         info.liquidity         ?? null,
+      market_cap:        info.market_cap        ?? null,
+      bonding_curve_pct: info.bonding_curve_pct ?? null,
+
+      // Rug probability & risk
+      rug_probability:   rug.rug_probability    ?? null,
+      risk_score:        rug.risk_score         ?? null,
+      risk_level:        rug.risk_level         ?? null,
+
+      // Holder distribution
+      holder_count:      holders.holder_count   ?? null,
+      top10_pct:         holders.top10_pct      ?? null,
+      dev_wallet_pct:    holders.dev_wallet_pct ?? null,
+      dev_wallet_balance:holders.dev_wallet_balance ?? null,
+
+      // Mint / freeze authority
+      mint_authority:    security.mint_authority    ?? null,
+      freeze_authority:  security.freeze_authority  ?? null,
+      is_mintable:       security.is_mintable       ?? null,
+      is_freezable:      security.is_freezable      ?? null,
+
+      // Solana network fees (estimated from GMGN fee data)
+      sol_fees_estimate: info.sol_fees_estimate ?? null,
+    };
+
+    console.log(`📡 GMGN metrics for ${ca}:`, JSON.stringify(metrics, null, 2));
+    return metrics;
+  } catch (error) {
+    console.error(`⚠️  GMGN fetch failed for ${ca}:`, error.message);
+    return null;
+  }
+}
+
 async function getTokenMetrics(mint) {
   try {
     const supply = await rpcCall("getTokenSupply", [mint]);
@@ -56,12 +136,39 @@ async function getTokenMetrics(mint) {
 
     const top10Percent = totalSupply > 0 ? (top10Supply / totalSupply) * 100 : 0;
 
-    return {
+    const heliusMetrics = {
       mint,
       holders: topHolders.length,
       top10_percent: Math.round(top10Percent * 100) / 100,
       dev_percent: Math.round(devPercent * 100) / 100,
     };
+
+    // Fetch deep GMGN metrics and merge with Helius data
+    const gmgn = await getGMGNMetrics(mint);
+    const merged = {
+      ...heliusMetrics,
+      // Prefer GMGN holder count when available, fall back to Helius top-accounts length
+      holders: gmgn?.holder_count ?? heliusMetrics.holders,
+      top10_percent: gmgn?.top10_pct ?? heliusMetrics.top10_percent,
+      dev_percent: gmgn?.dev_wallet_pct ?? heliusMetrics.dev_percent,
+      // GMGN-only fields (null when API key not set)
+      volume_24h:         gmgn?.volume_24h         ?? null,
+      liquidity:          gmgn?.liquidity          ?? null,
+      market_cap:         gmgn?.market_cap         ?? null,
+      bonding_curve_pct:  gmgn?.bonding_curve_pct  ?? null,
+      rug_probability:    gmgn?.rug_probability     ?? null,
+      risk_score:         gmgn?.risk_score          ?? null,
+      risk_level:         gmgn?.risk_level          ?? null,
+      dev_wallet_balance: gmgn?.dev_wallet_balance  ?? null,
+      mint_authority:     gmgn?.mint_authority      ?? null,
+      freeze_authority:   gmgn?.freeze_authority    ?? null,
+      is_mintable:        gmgn?.is_mintable         ?? null,
+      is_freezable:       gmgn?.is_freezable        ?? null,
+      sol_fees_estimate:  gmgn?.sol_fees_estimate   ?? null,
+    };
+
+    console.log(`📊 Full metrics for ${mint}:`, JSON.stringify(merged, null, 2));
+    return merged;
   } catch (error) {
     console.error(`Failed to get metrics for ${mint}:`, error);
     return null;
@@ -168,14 +275,25 @@ async function checkNewTokens() {
 
           const filter = applyFilters(metrics);
 
+          const gmgnLines = metrics.volume_24h !== null ? `
+💧 Liquidity:    ${metrics.liquidity ?? "n/a"}
+📈 Volume 24h:   ${metrics.volume_24h ?? "n/a"}
+💰 Market Cap:   ${metrics.market_cap ?? "n/a"}
+🎯 Bonding Curve:${metrics.bonding_curve_pct !== null ? ` ${metrics.bonding_curve_pct}%` : " n/a"}
+☠️  Rug Prob:     ${metrics.rug_probability !== null ? `${metrics.rug_probability}%` : "n/a"} (risk: ${metrics.risk_level ?? "n/a"})
+🏦 Dev Balance:  ${metrics.dev_wallet_balance !== null ? `${metrics.dev_wallet_balance} SOL` : "n/a"}
+🔑 Mint Auth:    ${metrics.mint_authority ?? "n/a"} | Freeze: ${metrics.freeze_authority ?? "n/a"}
+⛽ SOL Fees Est: ${metrics.sol_fees_estimate !== null ? `${metrics.sol_fees_estimate} SOL` : "n/a"}` : "\n⚠️  GMGN data unavailable — set GMGN_API_KEY for deep metrics";
+
           const alert = `
 🚀 NEW TOKEN DETECTED
 CA: \`${mint}\`
 
-📊 METRICS
+📊 HELIUS METRICS
 Top 10: ${metrics.top10_percent}%
 Holders: ${metrics.holders}
 Dev: ${metrics.dev_percent}%
+${gmgnLines}
 
 ⚡ SCORE: ${filter.score}/100
 
