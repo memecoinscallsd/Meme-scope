@@ -11,10 +11,10 @@ const FILTERS = {
   top_holder_max_percent: 75,
   liquidity_min: 0,
   liquidity_max: 100000,
-  bonding_curve_min: 15,
+  bonding_curve_min: 0,
   bonding_curve_max: 85,
-  volume_min: 5000,
-  marketcap_min: 1000,
+  volume_min: 1000,
+  marketcap_min: 100,
   marketcap_max: 500000,
 };
 
