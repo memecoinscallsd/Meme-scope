@@ -8,6 +8,7 @@ const FILTERS = {
   holders_min: 50,
   holders_max: 5000,
   dev_holdings_max: 10,
+  top_holder_max_percent: 75,
   liquidity_min: 0,
   liquidity_max: 100000,
   bonding_curve_min: 15,
@@ -81,6 +82,11 @@ function applyFilters(metrics) {
     score += 20;
   } else {
     reasons.push(`❌ Holders: ${metrics.holders} (need ${FILTERS.holders_min}-${FILTERS.holders_max})`);
+  }
+
+  if (metrics.dev_percent > FILTERS.top_holder_max_percent) {
+    reasons.push(`❌ Top holder: ${metrics.dev_percent}% (max ${FILTERS.top_holder_max_percent}% — extreme whale concentration)`);
+    return { passed: false, score: 0, reasons };
   }
 
   if (metrics.dev_percent <= FILTERS.dev_holdings_max) {
