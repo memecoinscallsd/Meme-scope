@@ -84,8 +84,8 @@ function applyFilters(metrics) {
     reasons.push(`❌ Holders: ${metrics.holders} (need ${FILTERS.holders_min}-${FILTERS.holders_max})`);
   }
 
-  if (metrics.dev_percent > FILTERS.top_holder_max_percent) {
-    reasons.push(`❌ Top holder: ${metrics.dev_percent}% (max ${FILTERS.top_holder_max_percent}% — extreme whale concentration)`);
+  if (metrics.top10_percent > FILTERS.top_holder_max_percent) {
+    reasons.push(`❌ Top 10 holders: ${metrics.top10_percent}% (max ${FILTERS.top_holder_max_percent}% — coordinated whale dump risk)`);
     return { passed: false, score: 0, reasons };
   }
 
