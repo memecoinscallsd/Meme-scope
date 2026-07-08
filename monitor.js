@@ -5,7 +5,7 @@ const TELEGRAM_CHAT_ID = "8655397679";
 const FILTERS = {
   top10_min: 15,
   top10_max: 50,
-  holders_min: 150,
+  holders_min: 50,
   holders_max: 5000,
   dev_holdings_max: 10,
   liquidity_min: 0,
