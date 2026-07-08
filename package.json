@@ -1,0 +1,9 @@
+{
+  "name": "meme-scope",
+  "version": "1.0.0",
+  "description": "Real-time Pump.fun token monitor",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js"
+  }
+}
