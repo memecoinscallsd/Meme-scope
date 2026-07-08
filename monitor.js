@@ -1,4 +1,22 @@
 const HELIUS_API = "https://mainnet.helius-rpc.com/?api-key=a918e88a-94f6-4eeb-803b-e8d4365c57e9";
+
+// ─── Deep-scan targets ────────────────────────────────────────────────────────
+const TOKENS_TO_ANALYZE = [
+  "GbRF5ajmAaoY6eDKxr8TLEUcSuN1ywn64vASb5gpump",
+  "DJmaPqWRjKXa2Pep4QF1zMt2DtW9ETYnZ4SAbFDqpump",
+  "Gkd8NnXnNyjST5XuvJhrHLK3X6N3rBRsX1NeWDyXpump",
+  "5pDbcXKVk9FMCz7P31iaezva7iR3rGWhJz6TQU6Qpump",
+  "GV29tjZpCuSG5VyY1rNp4mDtjmkNj8Dk9fKMjjDapump",
+  "CLPosaP5X6LbgAviCceKtCWu4R4ZgmJCQuZ7GR9rpump",
+  "FsTkJ88ZLdWpmBLhCNK8v5znnncUBDMsZCGxmxu6pump",
+  "8WdF2oxXBCdcmjPLQJfgCtHtiGCWYb222eMYyv8Npump",
+  "UnizQZVoY91deEysW5N18sY6zLnjofh2FyjS1pDH4NN",
+  "DjNyCnvrwrYjbm9bbqMZ7tUsodSCSYKixb9L6AGJpump",
+  "JCVbxzpXMupRMg36kaRHWJtvwqTzqZgrzrvYNqVEpump",
+  "2D6CHDuZpCaBNu766DMV3fbaHqsBV9qkepgmwmqFpump",
+  "2TeVbvCdFxGFG7dT39XGDVdaUCeG76aqUGRoisk6pump",
+  "GqZ2HDjNbqhdNJVfZhFWPfQoJcHt9bG92NR6UVoRpump",
+];
 const TELEGRAM_BOT_TOKEN = "8871164860:AAGtHHO6VXUA4fuk1h111qFH5aIDDUYohc0";
 const TELEGRAM_CHAT_ID = "8655397679";
 const GMGN_API_KEY = process.env.GMGN_API_KEY || null;
@@ -319,5 +337,103 @@ ${filter.reasons.length > 0 ? "⚠️ Issues:\n" + filter.reasons.join("\n") : "
   }
 }
 
-setInterval(checkNewTokens, 30000);
-checkNewTokens();
+// ─── Deep-scan helpers ────────────────────────────────────────────────────────
+
+async function analyzeToken(mint) {
+  console.log(`\n${"─".repeat(72)}`);
+  console.log(`🔬 ANALYZING: ${mint}`);
+  console.log(`${"─".repeat(72)}`);
+
+  const metrics = await getTokenMetrics(mint);
+  if (!metrics) {
+    console.log(`❌ Could not fetch metrics for ${mint}`);
+    return { mint, passed: false, score: 0, error: true };
+  }
+
+  const filter = applyFilters(metrics);
+
+  // ── Print all metrics ──────────────────────────────────────────────────────
+  console.log(`\n📊 HELIUS METRICS`);
+  console.log(`   Top 10 holders : ${metrics.top10_percent ?? "n/a"}%  (filter: ${FILTERS.top10_min}–${FILTERS.top10_max}%)`);
+  console.log(`   Holder count   : ${metrics.holders ?? "n/a"}         (filter: ${FILTERS.holders_min}–${FILTERS.holders_max})`);
+  console.log(`   Dev holdings   : ${metrics.dev_percent ?? "n/a"}%    (filter: ≤${FILTERS.dev_holdings_max}%)`);
+
+  if (metrics.volume_24h !== null) {
+    console.log(`\n📡 GMGN METRICS`);
+    console.log(`   Volume 24h     : ${metrics.volume_24h ?? "n/a"}    (filter: ≥${FILTERS.volume_min})`);
+    console.log(`   Liquidity      : ${metrics.liquidity ?? "n/a"}     (filter: ${FILTERS.liquidity_min}–${FILTERS.liquidity_max})`);
+    console.log(`   Market Cap     : ${metrics.market_cap ?? "n/a"}    (filter: ${FILTERS.marketcap_min}–${FILTERS.marketcap_max})`);
+    console.log(`   Bonding Curve  : ${metrics.bonding_curve_pct !== null ? `${metrics.bonding_curve_pct}%` : "n/a"}  (filter: ${FILTERS.bonding_curve_min}–${FILTERS.bonding_curve_max}%)`);
+    console.log(`   Rug Probability: ${metrics.rug_probability !== null ? `${metrics.rug_probability}%` : "n/a"}`);
+    console.log(`   Risk Score     : ${metrics.risk_score ?? "n/a"}  |  Risk Level: ${metrics.risk_level ?? "n/a"}`);
+    console.log(`   Dev Wallet Bal : ${metrics.dev_wallet_balance !== null ? `${metrics.dev_wallet_balance} SOL` : "n/a"}`);
+    console.log(`   Mint Authority : ${metrics.mint_authority ?? "n/a"}`);
+    console.log(`   Freeze Auth    : ${metrics.freeze_authority ?? "n/a"}`);
+    console.log(`   Is Mintable    : ${metrics.is_mintable ?? "n/a"}  |  Is Freezable: ${metrics.is_freezable ?? "n/a"}`);
+    console.log(`   SOL Fees Est   : ${metrics.sol_fees_estimate !== null ? `${metrics.sol_fees_estimate} SOL` : "n/a"}`);
+  } else {
+    console.log(`\n⚠️  GMGN data unavailable — set GMGN_API_KEY for deep metrics`);
+  }
+
+  // ── Filter verdict ─────────────────────────────────────────────────────────
+  console.log(`\n⚡ SCORE: ${filter.score}/100  →  ${filter.passed ? "✅ PASSED" : "❌ FAILED"}`);
+  if (filter.reasons.length > 0) {
+    console.log(`   Failing filters:`);
+    for (const r of filter.reasons) console.log(`     ${r}`);
+  }
+  console.log(`🔗 https://pump.fun/${mint}`);
+
+  return { mint, passed: filter.passed, score: filter.score, metrics, filter };
+}
+
+async function analyzeAllTokens() {
+  console.log(`\n${"═".repeat(72)}`);
+  console.log(`🚀 DEEP SCAN — ${TOKENS_TO_ANALYZE.length} tokens`);
+  console.log(`${"═".repeat(72)}`);
+
+  const results = [];
+
+  for (let i = 0; i < TOKENS_TO_ANALYZE.length; i++) {
+    const mint = TOKENS_TO_ANALYZE[i];
+    const result = await analyzeToken(mint);
+    results.push(result);
+
+    // 1 s delay between requests to avoid rate limiting
+    if (i < TOKENS_TO_ANALYZE.length - 1) {
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  // ── Summary ────────────────────────────────────────────────────────────────
+  console.log(`\n${"═".repeat(72)}`);
+  console.log(`📋 DEEP SCAN SUMMARY`);
+  console.log(`${"═".repeat(72)}`);
+
+  const passed = results.filter((r) => r.passed);
+  const failed = results.filter((r) => !r.passed && !r.error);
+  const errored = results.filter((r) => r.error);
+
+  console.log(`   Total   : ${results.length}`);
+  console.log(`   ✅ Passed: ${passed.length}`);
+  console.log(`   ❌ Failed: ${failed.length}`);
+  console.log(`   ⚠️  Errors: ${errored.length}`);
+
+  console.log(`\n   Token breakdown:`);
+  for (const r of results) {
+    const status = r.error ? "⚠️  ERROR " : r.passed ? "✅ PASS  " : "❌ FAIL  ";
+    const rugLine = r.metrics?.rug_probability !== null && r.metrics?.rug_probability !== undefined
+      ? `  rug=${r.metrics.rug_probability}%`
+      : "";
+    const volLine = r.metrics?.volume_24h !== null && r.metrics?.volume_24h !== undefined
+      ? `  vol=${r.metrics.volume_24h}`
+      : "";
+    console.log(`   ${status} [${String(r.score ?? 0).padStart(3)}/100]${rugLine}${volLine}  ${r.mint}`);
+  }
+
+  console.log(`\n${"═".repeat(72)}`);
+  console.log(`✅ Deep scan complete.`);
+  console.log(`${"═".repeat(72)}\n`);
+}
+
+// ─── Startup: run deep scan instead of normal polling loop ───────────────────
+analyzeAllTokens();
