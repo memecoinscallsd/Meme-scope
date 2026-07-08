@@ -15,6 +15,9 @@ const FILTERS = {
   volume_min: 5000,
   marketcap_min: 1000,
   marketcap_max: 500000,
+  mint_authority_disabled: true,
+  freeze_authority_disabled: true,
+  top_holder_max_percent: 30,
 };
 
 let processedTokens = new Set();
@@ -36,6 +39,48 @@ async function rpcCall(method, params) {
   return data.result;
 }
 
+// Decodes the SPL Mint account layout (82 bytes) to check authority flags.
+// Layout (little-endian):
+//   [0]      mintAuthorityOption  (u32 low byte) — 1 = authority present, 0 = disabled
+//   [4-35]   mintAuthority        (32-byte public key)
+//   [36-43]  supply               (u64)
+//   [44]     decimals             (u8)
+//   [45]     isInitialized        (bool)
+//   [46]     freezeAuthorityOption (u32 low byte) — 1 = authority present, 0 = disabled
+//   [50-81]  freezeAuthority      (32-byte public key)
+async function getMintMetadata(mint) {
+  try {
+    const result = await rpcCall("getAccountInfo", [
+      mint,
+      { encoding: "base64" },
+    ]);
+
+    if (!result || !result.value || !result.value.data) {
+      console.error(`No account data returned for mint ${mint}`);
+      return null;
+    }
+
+    const raw = Buffer.from(result.value.data[0], "base64");
+
+    if (raw.length < 82) {
+      console.error(`Mint account data too short for ${mint}: ${raw.length} bytes`);
+      return null;
+    }
+
+    // Option flags: 0 = None (disabled), 1 = Some (authority is set)
+    const mintAuthorityOption = raw.readUInt32LE(0);
+    const freezeAuthorityOption = raw.readUInt32LE(46);
+
+    return {
+      mintAuthorityDisabled: mintAuthorityOption === 0,
+      freezeAuthorityDisabled: freezeAuthorityOption === 0,
+    };
+  } catch (error) {
+    console.error(`Failed to get mint metadata for ${mint}:`, error);
+    return null;
+  }
+}
+
 async function getTokenMetrics(mint) {
   try {
     const supply = await rpcCall("getTokenSupply", [mint]);
@@ -46,20 +91,29 @@ async function getTokenMetrics(mint) {
 
     let top10Supply = 0;
     let devPercent = 0;
+    let topHolderPercent = 0;
 
     for (let i = 0; i < Math.min(10, topHolders.length); i++) {
       const amount = parseFloat(topHolders[i].uiAmount || "0");
       top10Supply += amount;
-      if (i === 0) devPercent = totalSupply > 0 ? (amount / totalSupply) * 100 : 0;
+      if (i === 0) {
+        devPercent = totalSupply > 0 ? (amount / totalSupply) * 100 : 0;
+        topHolderPercent = devPercent;
+      }
     }
 
     const top10Percent = totalSupply > 0 ? (top10Supply / totalSupply) * 100 : 0;
+
+    const mintMeta = await getMintMetadata(mint);
 
     return {
       mint,
       holders: topHolders.length,
       top10_percent: Math.round(top10Percent * 100) / 100,
       dev_percent: Math.round(devPercent * 100) / 100,
+      top_holder_percent: Math.round(topHolderPercent * 100) / 100,
+      mintAuthorityDisabled: mintMeta ? mintMeta.mintAuthorityDisabled : null,
+      freezeAuthorityDisabled: mintMeta ? mintMeta.freezeAuthorityDisabled : null,
     };
   } catch (error) {
     console.error(`Failed to get metrics for ${mint}:`, error);
@@ -70,6 +124,24 @@ async function getTokenMetrics(mint) {
 function applyFilters(metrics) {
   const reasons = [];
   let score = 0;
+
+  // Hard-reject: mint authority still active — dev can mint infinite tokens
+  if (FILTERS.mint_authority_disabled && metrics.mintAuthorityDisabled === false) {
+    reasons.push(`🚨 Mint authority still active (rug risk)`);
+    return { passed: false, score: 0, reasons };
+  }
+
+  // Hard-reject: freeze authority still active — dev can freeze holder accounts
+  if (FILTERS.freeze_authority_disabled && metrics.freezeAuthorityDisabled === false) {
+    reasons.push(`🚨 Freeze authority still active (rug risk)`);
+    return { passed: false, score: 0, reasons };
+  }
+
+  // Hard-reject: single whale holds >30% — extreme dump risk
+  if (metrics.top_holder_percent > FILTERS.top_holder_max_percent) {
+    reasons.push(`🚨 Top holder: ${metrics.top_holder_percent}% (max ${FILTERS.top_holder_max_percent}% — whale dump risk)`);
+    return { passed: false, score: 0, reasons };
+  }
 
   if (metrics.top10_percent >= FILTERS.top10_min && metrics.top10_percent <= FILTERS.top10_max) {
     score += 20;
